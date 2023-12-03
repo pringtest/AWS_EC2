@@ -1,0 +1,142 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Basic EC2
+
+Parameters:
+  Organization:
+    Type: String
+  Project:
+    Type: String
+  Env:
+    Type: String
+  PublicSubnet01Id:
+    Type: String
+  VpcId:
+    Type: String
+
+Conditions:
+  IsDev: !Equals [!Ref Env, dev]
+  IsProd: !Equals [!Ref Env, prod]
+
+Resources:
+  # |------------------------------------------------------|
+  # | Instance                                             |
+  # |------------------------------------------------------|
+
+  # create s3 bucket
+  BucketS3:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: "download-file-temporary"
+      AccessControl: BucketOwnerFullControl
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  # create ec2 IAM role
+  EC2InstanceProfileRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  # create ec2 instance profile
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: 
+        - !Ref EC2InstanceProfileRole
+  
+  # create security group for Zulip ec2 instance
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EC2 Security Group for SES Server
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: 0.0.0.0/0
+      Tags: 
+        - Key: Name
+          Value: !Sub '${Organization}-${Env}-${Project}-security-group'
+
+  # Create launch template for ec2 Zulip
+  # please be carefull editing template will create new instance
+  Ec2LaunchTemplate:
+    DependsOn:
+      - EC2SecurityGroup
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub '${Organization}-${Env}-${Project}-template'
+      LaunchTemplateData:
+        ImageId: ami-082b1f4237bd816a1 # Ubuntu EC2 20.04 LTS (HVM), SSD Volume Type (64bit x86)
+        InstanceType: t2.micro
+        IamInstanceProfile: 
+          Arn: !GetAtt EC2InstanceProfile.Arn
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: true # ec2 in private subnet no need public ip
+            DeleteOnTermination: true
+            DeviceIndex: 0
+            Groups: 
+              - !GetAtt EC2SecurityGroup.GroupId
+            SubnetId: !Ref PublicSubnet01Id
+        BlockDeviceMappings: 
+          - DeviceName: /dev/sda1
+            Ebs: 
+              DeleteOnTermination: true
+              Encrypted: false
+              VolumeSize: 10
+              VolumeType: gp2
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            
+            # Install Docker with Docker Compose
+            sudo su
+            cd /
+            sudo apt update
+            yes | sudo apt install ca-certificates curl gnupg lsb-release
+            sudo mkdir -m 0755 -p /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            echo \
+              "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+              $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            sudo chmod a+r /etc/apt/keyrings/docker.gpg
+            sudo apt update
+            yes | sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+            yes | sudo apt install docker-compose
+
+            # Install apache
+            yes | sudo apt install apache2
+            sudo systemctl start apache2
+            sudo systemctl enable apache2
+  
+  # create instance
+  Ec2Instance:
+    DependsOn:
+      - Ec2LaunchTemplate
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate: 
+        LaunchTemplateId: !Ref Ec2LaunchTemplate
+        Version: !GetAtt Ec2LaunchTemplate.LatestVersionNumber
+      Tags: 
+        - Key: Name
+          Value: !Sub '${Organization}-${Env}-${Project}-server'

@@ -1,0 +1,32 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Root Template
+
+Parameters:
+  Organization:
+    Type: String
+  Project:
+    Type: String
+  Env:
+    Type: String
+
+Conditions:
+  IsDev: !Equals [!Ref Env, dev]
+  IsProd: !Equals [!Ref Env, prod]      
+  
+Resources:
+  # |-------------------------------------------|
+  # | Project: Basic EC2                        |
+  # |-------------------------------------------|
+
+  Server:
+    Condition: IsDev
+    Type: AWS::Serverless::Application
+    Properties:
+      Location: './stacks/server.yml'
+      Parameters:
+        Organization: !Ref Organization
+        Project: !Ref Project
+        Env: !Ref Env
+        PublicSubnet01Id: subnet-08509de9747168210
+        VpcId: vpc-044d105565b010be6
